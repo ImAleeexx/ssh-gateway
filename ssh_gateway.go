@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.htdvisser.nl/ssh-gateway/pkg/cmd"
+	"go.htdvisser.nl/ssh-gateway/pkg/discord"
 	"go.htdvisser.nl/ssh-gateway/pkg/forward"
 	"go.htdvisser.nl/ssh-gateway/pkg/geoip"
 	"go.htdvisser.nl/ssh-gateway/pkg/log"
@@ -87,7 +88,8 @@ type Gateway struct {
 	commandUser       string
 	commandDispatcher cmd.Dispatcher
 
-	slackNotifier *slack.Notifier
+	slackNotifier   *slack.Notifier
+	discordNotifier *discord.Notifier
 
 	geoIPDB *geoip.DB
 }
@@ -109,6 +111,10 @@ func (gtw *Gateway) RegisterCommand(name string, cmd cmd.Command) {
 
 func (gtw *Gateway) SetSlackNotifier(slackNotifier *slack.Notifier) {
 	gtw.slackNotifier = slackNotifier
+}
+
+func (gtw *Gateway) SetDiscordNotifier(discordNotifier *discord.Notifier) {
+	gtw.discordNotifier = discordNotifier
 }
 
 var userRegexp = regexp.MustCompile("^[a-z0-9._-]+$")
@@ -264,6 +270,13 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	defer logger.Info("Close SSH conn")
 
 	gtw.slackNotifier.NotifyConnect(
+		strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_"),
+		remoteIP,
+		remoteIPDesc,
+		sshConn.User(),
+	)
+
+	gtw.discordNotifier.NotifyConnect(
 		strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_"),
 		remoteIP,
 		remoteIPDesc,

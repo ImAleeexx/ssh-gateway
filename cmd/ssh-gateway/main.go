@@ -36,6 +36,7 @@ import (
 	"github.com/urfave/cli"
 	"go.htdvisser.nl/ssh-gateway"
 	"go.htdvisser.nl/ssh-gateway/pkg/cmd"
+	"go.htdvisser.nl/ssh-gateway/pkg/discord"
 	"go.htdvisser.nl/ssh-gateway/pkg/log"
 	"go.htdvisser.nl/ssh-gateway/pkg/metrics"
 	"go.htdvisser.nl/ssh-gateway/pkg/slack"
@@ -84,6 +85,7 @@ func init() {
 		cli.StringFlag{Name: "default-user", Usage: "Default username to use on upstream servers", EnvVar: "DEFAULT_USER"},
 		cli.StringFlag{Name: "command-user", Usage: "Username for command execution", EnvVar: "COMMAND_USER"},
 		cli.StringFlag{Name: "slack-url", Usage: "URL for Slack notifications", EnvVar: "SLACK_URL"},
+		cli.StringFlag{Name: "discord-url", Usage: "URL for Discord notifications", EnvVar: "DISCORD_URL"},
 		cli.StringFlag{Name: "metrics-username", Usage: "Username for metrics endpoint basic auth", EnvVar: "METRICS_USERNAME"},
 		cli.StringFlag{Name: "metrics-password", Usage: "Password for metrics endpoint basic auth", EnvVar: "METRICS_PASSWORD"},
 	}
@@ -100,8 +102,8 @@ func main() {
 func basicAuth(handler http.Handler, username, password string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(username)) != 1 || 
-		   subtle.ConstantTimeCompare([]byte(pass), []byte(password)) != 1 {
+		if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(username)) != 1 ||
+			subtle.ConstantTimeCompare([]byte(pass), []byte(password)) != 1 {
 			w.Header().Set("WWW-Authenticate", `Basic realm="Metrics"`)
 			http.Error(w, "Unauthorized", http.StatusUnauthorized)
 			return
@@ -174,6 +176,12 @@ func Run(c *cli.Context) error {
 	if slackURL := c.String("slack-url"); slackURL != "" {
 		gtw.SetSlackNotifier(&slack.Notifier{
 			URL: slackURL,
+		})
+	}
+
+	if discordURL := c.String("discord-url"); discordURL != "" {
+		gtw.SetDiscordNotifier(&discord.Notifier{
+			URL: discordURL,
 		})
 	}
 
