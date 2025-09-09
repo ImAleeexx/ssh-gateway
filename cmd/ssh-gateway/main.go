@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"net"
 	"net/http"
@@ -83,6 +84,8 @@ func init() {
 		cli.StringFlag{Name: "default-user", Usage: "Default username to use on upstream servers", EnvVar: "DEFAULT_USER"},
 		cli.StringFlag{Name: "command-user", Usage: "Username for command execution", EnvVar: "COMMAND_USER"},
 		cli.StringFlag{Name: "slack-url", Usage: "URL for Slack notifications", EnvVar: "SLACK_URL"},
+		cli.StringFlag{Name: "metrics-username", Usage: "Username for metrics endpoint basic auth", EnvVar: "METRICS_USERNAME"},
+		cli.StringFlag{Name: "metrics-password", Usage: "Password for metrics endpoint basic auth", EnvVar: "METRICS_PASSWORD"},
 	}
 	app.Action = Run
 }
@@ -91,6 +94,20 @@ func main() {
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
+}
+
+// basicAuth wraps a handler with HTTP basic authentication
+func basicAuth(handler http.Handler, username, password string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || subtle.ConstantTimeCompare([]byte(user), []byte(username)) != 1 || 
+		   subtle.ConstantTimeCompare([]byte(pass), []byte(password)) != 1 {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Metrics"`)
+			http.Error(w, "Unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
 }
 
 // Run the SSH Gateway
@@ -177,7 +194,19 @@ func Run(c *cli.Context) error {
 		}
 	}()
 
-	http.Handle("/metrics", promhttp.Handler())
+	// Setup metrics endpoint with optional basic auth
+	metricsHandler := promhttp.Handler()
+	if metricsUsername := c.String("metrics-username"); metricsUsername != "" {
+		metricsPassword := c.String("metrics-password")
+		if metricsPassword == "" {
+			logger.Warn("Metrics username provided but no password - metrics endpoint will be unprotected")
+		} else {
+			logger.Info("Metrics endpoint protected with basic auth")
+			metricsHandler = basicAuth(metricsHandler, metricsUsername, metricsPassword)
+		}
+	}
+	http.Handle("/metrics", metricsHandler)
+
 	lis, err := net.Listen("tcp", c.String("listen"))
 	if err != nil {
 		logger.Error("Could not listen for SSH", zap.Error(err))
