@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"net"
 	"os"
 	"path/filepath"
@@ -197,7 +196,7 @@ func (gtw *Gateway) LoadConfig() error {
 		if filepath.Ext(identityFile) == ".pub" {
 			continue
 		}
-		identityBytes, err := ioutil.ReadFile(identityFile)
+		identityBytes, err := os.ReadFile(identityFile)
 		if err != nil {
 			return err
 		}
@@ -216,7 +215,7 @@ func (gtw *Gateway) LoadConfig() error {
 		if filepath.Ext(hostKeyFile) == ".pub" {
 			continue
 		}
-		hostKeyBytes, err := ioutil.ReadFile(hostKeyFile)
+		hostKeyBytes, err := os.ReadFile(hostKeyFile)
 		if err != nil {
 			return err
 		}
@@ -305,7 +304,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		}
 	}
 
-	configBytes, err := ioutil.ReadFile(filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "config.yml"))
+	configBytes, err := os.ReadFile(filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "config.yml"))
 	if err != nil {
 		logger.Warn("Could not read upstream config", zap.Error(err))
 		returnErr(err)
@@ -334,7 +333,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 			if filepath.Ext(identityFile) == ".pub" {
 				continue
 			}
-			identityBytes, err := ioutil.ReadFile(identityFile)
+			identityBytes, err := os.ReadFile(identityFile)
 			if err != nil {
 				logger.Warn("Could not read upstream identity file", zap.Error(err), zap.String("file", filepath.Base(identityFile)))
 				continue
@@ -362,7 +361,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	} else {
 		logger.Warn("No known_hosts files, will generate...")
 		hostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			ioutil.WriteFile(
+			os.WriteFile(
 				filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "known_host_generated"),
 				[]byte(knownhosts.Line([]string{hostname, remote.String()}, key)),
 				0644,

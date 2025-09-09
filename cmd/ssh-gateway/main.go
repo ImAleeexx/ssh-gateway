@@ -1,17 +1,20 @@
 // ssh-gateway is a forward Proxy for SSH Servers.
 //
 // USAGE:
-//    ssh-gateway [global options] command [command options] [arguments...]
+//
+//	ssh-gateway [global options] command [command options] [arguments...]
 //
 // COMMANDS:
-//      help, h  Shows a list of commands or help for one command
+//
+//	help, h  Shows a list of commands or help for one command
 //
 // GLOBAL OPTIONS:
-//    --debug         Show debug logs [$DEBUG]
-//    --listen value  Listen address (default: ":2222") [$LISTEN]
-//    --data value    Data directory (default: "./data") [$DATA]
-//    --help, -h      show help
-//    --version, -v   print the version
+//
+//	--debug         Show debug logs [$DEBUG]
+//	--listen value  Listen address (default: ":2222") [$LISTEN]
+//	--data value    Data directory (default: "./data") [$DATA]
+//	--help, -h      show help
+//	--version, -v   print the version
 package main
 
 import (

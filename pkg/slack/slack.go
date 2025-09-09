@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"sync"
@@ -92,7 +91,7 @@ func (n *Notifier) flush(events []eventData) error {
 	if err != nil {
 		return err
 	}
-	io.Copy(ioutil.Discard, res.Body)
+	io.Copy(io.Discard, res.Body)
 	res.Body.Close()
 	return nil
 }

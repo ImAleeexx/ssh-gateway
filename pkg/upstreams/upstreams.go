@@ -3,7 +3,6 @@ package upstreams
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,7 +18,7 @@ type Authorization struct {
 
 func matchingAuthorizedKeyFiles(publicKey ssh.PublicKey, authorizedKeyFiles ...string) (matches []Authorization, err error) {
 	for _, authorizedKeyFile := range authorizedKeyFiles {
-		authorizedKeyBytes, err := ioutil.ReadFile(authorizedKeyFile)
+		authorizedKeyBytes, err := os.ReadFile(authorizedKeyFile)
 		if err != nil {
 			return nil, err
 		}
