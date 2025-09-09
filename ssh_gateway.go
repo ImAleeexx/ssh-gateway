@@ -27,7 +27,7 @@ import (
 )
 
 // Name to be used as SSH Client/Server name.
-const Name = "Gateway"
+const Name = "IAX-Gateway"
 
 type upstreamConfig struct {
 	Host        string       `yaml:"host"`
