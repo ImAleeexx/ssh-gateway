@@ -1,10 +1,12 @@
 # SSH Gateway
 
+Project forked from htdvisser/ssh-gateway, original repository is not longer maintained. 
+
 An SSH gateway acts as some kind of forward proxy for SSH servers. This one allows you to set access and authentication for several upstream servers.
 
 ## Downloads
 
-Release builds can be downloaded from the [tag builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=tags) page, development builds from the [branch builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=branches) page. Docker images are on [`registry.gitlab.com/htdvisser/ssh-gateway`](https://gitlab.com/htdvisser/ssh-gateway/container_registry).
+Release builds can be downloaded from the [tag builds](https://gitlab.com/ImAleeexx/ssh-gateway/pipelines?scope=tags) page, development builds from the [branch builds](https://gitlab.com/ImAleeexx/ssh-gateway/pipelines?scope=branches) page.
 
 ## Usage
 
