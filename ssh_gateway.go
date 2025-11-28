@@ -143,7 +143,7 @@ var userRegexp = regexp.MustCompile("^[a-z0-9._-]+$")
 
 func (gtw *Gateway) bannerCallback(c ssh.ConnMetadata) string {
 	remoteIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-	return fmt.Sprintf("You are connecting as %s from %s...\n", c.User(), remoteIP)
+	return fmt.Sprintf("Hello 🫡, this connection to %s has been monitored for security purposes\nYour IP Address (%s) has been logged.\nThe access to this server is strictly restricted to authorized personnel only.\nUnauthorized access attempts will be investigated and may result in legal action.\nAll activities are recorded and audited.", c.User(), remoteIP)
 }
 
 func (gtw *Gateway) publicKeyCallback(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
