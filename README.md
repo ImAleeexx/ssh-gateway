@@ -1,5 +1,6 @@
 # SSH Gateway
 
+Project forked from htdvisser/ssh-gateway, original repository is not longer maintained.
 An SSH gateway acts as some kind of forward proxy for SSH servers. This one allows you to set access and authentication for several upstream servers.
 
 ## Features
@@ -14,13 +15,25 @@ An SSH gateway acts as some kind of forward proxy for SSH servers. This one allo
 
 ## Downloads
 
-Release builds can be downloaded from the [tag builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=tags) page, development builds from the [branch builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=branches) page. Docker images are on [`registry.gitlab.com/htdvisser/ssh-gateway`](https://gitlab.com/htdvisser/ssh-gateway/container_registry).
+Release builds can be downloaded from the [tag builds](https://gitlab.com/ImAleeexx/ssh-gateway/pipelines?scope=tags) page, development builds from the [branch builds](https://gitlab.com/ImAleeexx/ssh-gateway/pipelines?scope=branches) page.
+
+## Features
+
+- **SSH Key Authentication**: Standard SSH public key authentication
+- **Duo Push Authentication**: Optional two-factor authentication via Duo Push notifications
+- **Multi-upstream Support**: Route connections to different upstream servers
+- **Per-user Access Control**: Fine-grained access control per user and upstream
+- **Jump Host Support**: Connect through intermediate jump hosts
+- **Environment Variables**: Inject connection metadata into upstream sessions
+- **Metrics & Notifications**: Prometheus metrics, Slack/Discord notifications
+- **GeoIP Integration**: Log geographical information about connections
 
 ## Usage
 
 1. Configure the server by setting up the `data` folder (see below)
-2. Start the server by executing `ssh-gateway`
-3. Connect to the sever with `ssh -p 2222 foo@localhost`
+2. (Optional) Configure Duo Push authentication (see [DUO_SETUP.md](DUO_SETUP.md))
+3. Start the server by executing `ssh-gateway`
+4. Connect to the sever with `ssh -p 2222 foo@localhost`
 
 ## Configuration
 
@@ -59,8 +72,19 @@ data
 └── users
     ├── authorized_keys_alice
     ├── authorized_keys_bob
-    └── authorized_keys_charlie
+    ├── authorized_keys_charlie
+    ├── duo_enabled_alice         # Enable Duo Push for alice
+    └── duo_enabled_bob           # Enable Duo Push for bob
 ```
+
+### Duo Push Authentication (Optional)
+
+For enhanced security, you can enable Duo Push two-factor authentication:
+
+- `server/duo.yaml` contains Duo API configuration (integration key, secret key, API hostname)
+- `users/duo_enabled_<username>` files enable Duo Push for specific users. Empty file, just the presence of the file is enough.
+
+See [DUO_SETUP.md](DUO_SETUP.md) for detailed configuration instructions.
 
 Example upstream `config.yml`:
 

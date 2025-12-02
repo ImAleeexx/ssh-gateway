@@ -15,6 +15,7 @@ import (
 
 	"go.htdvisser.nl/ssh-gateway/pkg/cmd"
 	"go.htdvisser.nl/ssh-gateway/pkg/discord"
+	"go.htdvisser.nl/ssh-gateway/pkg/duo"
 	"go.htdvisser.nl/ssh-gateway/pkg/forward"
 	"go.htdvisser.nl/ssh-gateway/pkg/geoip"
 	"go.htdvisser.nl/ssh-gateway/pkg/log"
@@ -73,6 +74,22 @@ func NewGateway(ctx context.Context, dataDir string) *Gateway {
 	} else if err := gtw.geoIPDB.AddASN(filepath.Join(dataDir, "GeoLite2-ASN.mmdb")); err == nil {
 		logger.Info("Loaded GeoLite ASN database")
 	}
+
+	// Initialize Duo client if configuration is available
+	if duoClient, err := duo.NewClient(dataDir, logger); err == nil {
+		gtw.duoClient = duoClient
+		logger.Info("Loaded Duo configuration successfully")
+
+		// Test Duo API connectivity
+		if err := duoClient.CheckAPIConnectivity(); err != nil {
+			logger.Warn("Duo API connectivity check failed", zap.Error(err))
+		} else {
+			logger.Info("Duo API connectivity verified")
+		}
+	} else {
+		logger.Info("Duo not configured", zap.Error(err))
+	}
+
 	return gtw
 }
 
@@ -90,8 +107,9 @@ type Gateway struct {
 
 	slackNotifier   *slack.Notifier
 	discordNotifier *discord.Notifier
+	duoClient       *duo.Client
 
-	geoIPDB          *geoip.DB
+	geoIPDB           *geoip.DB
 	recordingSessions bool
 }
 
@@ -118,16 +136,18 @@ func (gtw *Gateway) SetDiscordNotifier(discordNotifier *discord.Notifier) {
 	gtw.discordNotifier = discordNotifier
 }
 
-// SetRecordingSessions enables or disables session recording.
 func (gtw *Gateway) SetRecordingSessions(enabled bool) {
 	gtw.recordingSessions = enabled
+}
+func (gtw *Gateway) SetDuoClient(duoClient *duo.Client) {
+	gtw.duoClient = duoClient
 }
 
 var userRegexp = regexp.MustCompile("^[a-z0-9._-]+$")
 
 func (gtw *Gateway) bannerCallback(c ssh.ConnMetadata) string {
 	remoteIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
-	return fmt.Sprintf("You are connecting as %s from %s...\n", c.User(), remoteIP)
+	return fmt.Sprintf("Hello 🫡, this connection to %s has been monitored for security purposes\nYour IP Address (%s) has been logged.\nThe access to this server is strictly restricted to authorized personnel only.\nUnauthorized access attempts will be investigated and may result in legal action.\nAll activities are recorded and audited.\n", c.User(), remoteIP)
 }
 
 func (gtw *Gateway) publicKeyCallback(c ssh.ConnMetadata, pubKey ssh.PublicKey) (*ssh.Permissions, error) {
@@ -487,6 +507,47 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	}()
 	metrics.RegisterStartForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 	defer metrics.RegisterEndForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
+
+	// Perform Duo Push authentication if configured and enabled for user
+	if gtw.duoClient != nil {
+		// Extract username from the authorized key name (e.g., "authorized_keys_alex" -> "alex")
+		keyUsername := strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_")
+		sshUsername := sshConn.User()
+
+		logger.Debug("Duo authentication details",
+			zap.String("key_username", keyUsername),
+			zap.String("ssh_username", sshUsername),
+			zap.String("pubkey_name", sshConn.Permissions.Extensions["pubkey-name"]))
+
+		// Store Duo status messages to include in error messages
+		var duoStatusMessages []string
+		messageSender := func(message string) error {
+			// Store the message to include in error reporting
+			duoStatusMessages = append(duoStatusMessages, strings.TrimSpace(message))
+			logger.Info("Duo Status", zap.String("message", strings.TrimSpace(message)))
+			return nil
+		}
+
+		// Use the key-based username for Duo authentication
+		// This matches the duo_enabled_<username> file pattern
+		err := gtw.duoClient.AuthenticateUserWithMessages(ctx, keyUsername, remoteIP, messageSender)
+		if err != nil {
+			logger.Warn("Duo Push authentication failed",
+				zap.String("key_username", keyUsername),
+				zap.Error(err))
+
+			// Include Duo status messages in the error
+			errorMsg := err.Error()
+			if len(duoStatusMessages) > 0 {
+				errorMsg = fmt.Sprintf("%s\nDuo Status: %s", errorMsg, strings.Join(duoStatusMessages, " → "))
+			}
+			returnErr(fmt.Errorf("%s", errorMsg))
+			return
+		}
+
+		logger.Info("Duo Push authentication completed successfully",
+			zap.String("key_username", keyUsername))
+	}
 
 	ctx = forward.NewContextWithEnvironment(ctx, map[string]string{
 		"SSH_GATEWAY_USER_PUBKEY_NAME":        sshConn.Permissions.Extensions["pubkey-name"],
