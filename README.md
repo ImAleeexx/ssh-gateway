@@ -2,6 +2,16 @@
 
 An SSH gateway acts as some kind of forward proxy for SSH servers. This one allows you to set access and authentication for several upstream servers.
 
+## Features
+
+- **Multi-upstream support**: Connect to multiple SSH servers through a single gateway
+- **Per-upstream authentication**: Control access with public keys per upstream
+- **Jump host support**: Connect through intermediate jump hosts
+- **Session recording**: Record sessions in asciinema format 
+- **Notifications**: Send connection notifications to Slack or Discord
+- **Metrics**: Prometheus metrics for monitoring
+- **GeoIP support**: Track connection locations
+
 ## Downloads
 
 Release builds can be downloaded from the [tag builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=tags) page, development builds from the [branch builds](https://gitlab.com/htdvisser/ssh-gateway/pipelines?scope=branches) page. Docker images are on [`registry.gitlab.com/htdvisser/ssh-gateway`](https://gitlab.com/htdvisser/ssh-gateway/container_registry).
@@ -60,6 +70,28 @@ port: 22 # (this is default)
 user: root # (this is default)
 password: hunter2 # (not recommended; use id_* files instead)
 ```
+
+## Session Recording
+
+Enable session recording to capture all SSH sessions in asciinema format:
+
+```bash
+ssh-gateway --record-sessions
+```
+
+Recordings are saved to `data/recordings/<upstream>/` and can be replayed with:
+
+```bash
+asciinema play data/recordings/foo/20231202-143022-alice.cast
+```
+
+### Recording Configuration
+- Recordings start when a PTY (pseudo-terminal) is requested
+- Sessions without a PTY (e.g., SCP, SFTP, port forwarding) are not recorded
+- Each SSH channel creates its own recording file if it uses a PTY
+- Recording stops automatically when the channel closes
+
+
 
 ## Advanced Functionality
 

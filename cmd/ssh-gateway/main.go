@@ -88,6 +88,7 @@ func init() {
 		cli.StringFlag{Name: "discord-url", Usage: "URL for Discord notifications", EnvVar: "DISCORD_URL"},
 		cli.StringFlag{Name: "metrics-username", Usage: "Username for metrics endpoint basic auth", EnvVar: "METRICS_USERNAME"},
 		cli.StringFlag{Name: "metrics-password", Usage: "Password for metrics endpoint basic auth", EnvVar: "METRICS_PASSWORD"},
+		cli.BoolFlag{Name: "record-sessions", Usage: "Enable session recording in asciinema format", EnvVar: "RECORD_SESSIONS"},
 	}
 	app.Action = Run
 }
@@ -178,11 +179,15 @@ func Run(c *cli.Context) error {
 			URL: slackURL,
 		})
 	}
-
 	if discordURL := c.String("discord-url"); discordURL != "" {
 		gtw.SetDiscordNotifier(&discord.Notifier{
 			URL: discordURL,
 		})
+	}
+
+	if c.Bool("record-sessions") {
+		gtw.SetRecordingSessions(true)
+		logger.Info("Session recording enabled")
 	}
 
 	var wg sync.WaitGroup

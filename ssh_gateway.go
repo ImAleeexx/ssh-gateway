@@ -91,7 +91,8 @@ type Gateway struct {
 	slackNotifier   *slack.Notifier
 	discordNotifier *discord.Notifier
 
-	geoIPDB *geoip.DB
+	geoIPDB          *geoip.DB
+	recordingSessions bool
 }
 
 // SetDefaultUser sets the default username to use on upstream servers (default is root).
@@ -115,6 +116,11 @@ func (gtw *Gateway) SetSlackNotifier(slackNotifier *slack.Notifier) {
 
 func (gtw *Gateway) SetDiscordNotifier(discordNotifier *discord.Notifier) {
 	gtw.discordNotifier = discordNotifier
+}
+
+// SetRecordingSessions enables or disables session recording.
+func (gtw *Gateway) SetRecordingSessions(enabled bool) {
+	gtw.recordingSessions = enabled
 }
 
 var userRegexp = regexp.MustCompile("^[a-z0-9._-]+$")
@@ -479,7 +485,6 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 			}
 		}
 	}()
-
 	metrics.RegisterStartForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 	defer metrics.RegisterEndForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 
@@ -489,6 +494,20 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		"SSH_GATEWAY_USER_PUBKEY_FINGERPRINT": sshConn.Permissions.Extensions["pubkey-fp"],
 		"SSH_GATEWAY_USER_IP":                 remoteIP,
 	})
+
+	// Set up session recording if enabled
+	if gtw.recordingSessions {
+		recordingDir := filepath.Join(gtw.dataDir, "recordings", sshConn.User())
+		if err := os.MkdirAll(recordingDir, 0755); err != nil {
+			logger.Warn("Could not create recording directory", zap.Error(err))
+		} else {
+			timestamp := time.Now().Format("20060102-150405")
+			pubkeyName := strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_")
+			recordingPath := filepath.Join(recordingDir, fmt.Sprintf("%s-%s.cast", timestamp, pubkeyName))
+			ctx = forward.NewContextWithRecordingPath(ctx, recordingPath)
+			logger.Info("Session recording enabled", zap.String("recording_path", recordingPath))
+		}
+	}
 
 	logger.Info("Start Forwarding")
 	go func() {

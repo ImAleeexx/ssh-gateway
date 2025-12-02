@@ -9,6 +9,7 @@ import (
 
 	"go.htdvisser.nl/ssh-gateway/pkg/encoding"
 	"go.htdvisser.nl/ssh-gateway/pkg/log"
+	"go.htdvisser.nl/ssh-gateway/pkg/recorder"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/ssh"
 )
@@ -52,6 +53,7 @@ type channel struct {
 	targetChannel  ssh.Channel
 	sourceRequests <-chan *ssh.Request
 	targetRequests <-chan *ssh.Request
+	recorder       *recorder.Recorder
 }
 
 func (c *channel) handle(ctx context.Context) {
@@ -59,6 +61,10 @@ func (c *channel) handle(ctx context.Context) {
 
 	logger.Debug("Accept channel")
 	defer logger.Debug("Close channel")
+
+	if c.recorder != nil {
+		defer c.recorder.Close()
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(4)
@@ -72,13 +78,21 @@ func (c *channel) handle(ctx context.Context) {
 	}()
 	go func() {
 		defer wg.Done()
-		defer c.targetChannel.CloseWrite()        // Only close the write, we may still expect a response.
-		io.Copy(c.targetChannel, c.sourceChannel) // nolint:gas
+		defer c.targetChannel.CloseWrite() // Only close the write, we may still expect a response.
+		var src io.Reader = c.sourceChannel
+		if c.recorder != nil {
+			src = recorder.NewRecordingReader(src, c.recorder)
+		}
+		io.Copy(c.targetChannel, src) // nolint:gas
 	}()
 	go func() {
 		defer wg.Done()
 		defer c.sourceChannel.Close()
-		io.Copy(c.sourceChannel, c.targetChannel) // nolint:gas
+		var dst io.Writer = c.sourceChannel
+		if c.recorder != nil {
+			dst = recorder.NewRecordingWriter(dst, c.recorder)
+		}
+		io.Copy(dst, c.targetChannel) // nolint:gas
 	}()
 	wg.Wait()
 }
@@ -90,6 +104,20 @@ func (c *channel) forwardChannelRequests(ctx context.Context, target ssh.Channel
 				target.SendRequest("env", false, append(encoding.String(k), encoding.String(v)...))
 			}
 		}
+		
+		// Handle PTY requests to extract terminal dimensions
+		if req.Type == "pty-req" && c.recorder == nil {
+			if width, height, ok := parsePtyRequest(req.Payload); ok {
+				// Create recorder for this session
+				if rec := createRecorder(ctx, width, height); rec != nil {
+					c.recorder = rec
+					log.FromContext(ctx).Debug("Started session recording", 
+						zap.Int("width", width), 
+						zap.Int("height", height))
+				}
+			}
+		}
+		
 		ok, err := target.SendRequest(req.Type, req.WantReply, req.Payload)
 		if err != nil {
 			return err
@@ -102,6 +130,42 @@ func (c *channel) forwardChannelRequests(ctx context.Context, target ssh.Channel
 		log.FromContext(ctx).Debug("Forward channel request", zap.String("type", req.Type), zap.Bool("result", ok))
 	}
 	return nil
+}
+
+// parsePtyRequest extracts terminal dimensions from a PTY request payload
+func parsePtyRequest(payload []byte) (width, height int, ok bool) {
+	// PTY request format: string term, uint32 width, uint32 height, uint32 pixelWidth, uint32 pixelHeight, string modes
+	_, rest, ok := encoding.ParseString(payload)
+	if !ok {
+		return
+	}
+	var w, h uint32
+	w, rest, ok = encoding.ParseUint32(rest)
+	if !ok {
+		return
+	}
+	h, _, ok = encoding.ParseUint32(rest)
+	if !ok {
+		return
+	}
+	return int(w), int(h), true
+}
+
+// createRecorder creates a new recorder if recording is enabled in context
+func createRecorder(ctx context.Context, width, height int) *recorder.Recorder {
+	recPath := RecordingPathFromContext(ctx)
+	if recPath == "" {
+		return nil
+	}
+	
+	env := EnvironmentFromContext(ctx)
+	rec, err := recorder.New(recPath, width, height, env)
+	if err != nil {
+		log.FromContext(ctx).Warn("Failed to create session recorder", zap.Error(err))
+		return nil
+	}
+	
+	return rec
 }
 
 // Channels forwards ssh channels
