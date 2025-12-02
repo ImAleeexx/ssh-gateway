@@ -54,6 +54,23 @@ type channel struct {
 	sourceRequests <-chan *ssh.Request
 	targetRequests <-chan *ssh.Request
 	recorder       *recorder.Recorder
+	recorderMu     sync.Mutex
+	recorderReady  chan struct{}
+}
+
+func (c *channel) setRecorder(rec *recorder.Recorder) {
+	c.recorderMu.Lock()
+	defer c.recorderMu.Unlock()
+	if c.recorder == nil && rec != nil {
+		c.recorder = rec
+		close(c.recorderReady)
+	}
+}
+
+func (c *channel) getRecorder() *recorder.Recorder {
+	c.recorderMu.Lock()
+	defer c.recorderMu.Unlock()
+	return c.recorder
 }
 
 func (c *channel) handle(ctx context.Context) {
@@ -79,18 +96,34 @@ func (c *channel) handle(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		defer c.targetChannel.CloseWrite() // Only close the write, we may still expect a response.
+		
+		// Wait for recorder to be ready (or timeout)
+		select {
+		case <-c.recorderReady:
+		case <-ctx.Done():
+		}
+		
 		var src io.Reader = c.sourceChannel
-		if c.recorder != nil {
-			src = recorder.NewRecordingReader(src, c.recorder)
+		rec := c.getRecorder()
+		if rec != nil {
+			src = recorder.NewRecordingReader(src, rec)
 		}
 		io.Copy(c.targetChannel, src) // nolint:gas
 	}()
 	go func() {
 		defer wg.Done()
 		defer c.sourceChannel.Close()
+		
+		// Wait for recorder to be ready (or timeout)
+		select {
+		case <-c.recorderReady:
+		case <-ctx.Done():
+		}
+		
 		var dst io.Writer = c.sourceChannel
-		if c.recorder != nil {
-			dst = recorder.NewRecordingWriter(dst, c.recorder)
+		rec := c.getRecorder()
+		if rec != nil {
+			dst = recorder.NewRecordingWriter(dst, rec)
 		}
 		io.Copy(dst, c.targetChannel) // nolint:gas
 	}()
@@ -106,14 +139,19 @@ func (c *channel) forwardChannelRequests(ctx context.Context, target ssh.Channel
 		}
 		
 		// Handle PTY requests to extract terminal dimensions
-		if req.Type == "pty-req" && c.recorder == nil {
+		if req.Type == "pty-req" {
 			if width, height, ok := parsePtyRequest(req.Payload); ok {
-				// Create recorder for this session
-				if rec := createRecorder(ctx, width, height); rec != nil {
-					c.recorder = rec
-					log.FromContext(ctx).Debug("Started session recording", 
-						zap.Int("width", width), 
-						zap.Int("height", height))
+				// Create recorder for this session if not already created
+				if c.getRecorder() == nil {
+					if rec := createRecorder(ctx, width, height); rec != nil {
+						c.setRecorder(rec)
+						log.FromContext(ctx).Info("Started session recording", 
+							zap.Int("width", width), 
+							zap.Int("height", height))
+					} else {
+						// No recording configured, signal ready anyway
+						close(c.recorderReady)
+					}
 				}
 			}
 		}
@@ -206,6 +244,7 @@ func forwardChannels(ctx context.Context, target *ssh.Client, channels <-chan ss
 			sourceRequests: sourceRequests,
 			targetChannel:  targetChannel,
 			targetRequests: targetRequests,
+			recorderReady:  make(chan struct{}),
 		}
 		wg.Add(1)
 		go func(newChannel ssh.NewChannel) {
