@@ -56,13 +56,15 @@ type channel struct {
 	recorder       *recorder.Recorder
 	recorderMu     sync.Mutex
 	recorderReady  chan struct{}
+	recorderSet    bool
 }
 
 func (c *channel) setRecorder(rec *recorder.Recorder) {
 	c.recorderMu.Lock()
 	defer c.recorderMu.Unlock()
-	if c.recorder == nil && rec != nil {
+	if !c.recorderSet {
 		c.recorder = rec
+		c.recorderSet = true
 		close(c.recorderReady)
 	}
 }
@@ -79,9 +81,12 @@ func (c *channel) handle(ctx context.Context) {
 	logger.Debug("Accept channel")
 	defer logger.Debug("Close channel")
 
-	if c.recorder != nil {
-		defer c.recorder.Close()
-	}
+	defer func() {
+		rec := c.getRecorder()
+		if rec != nil {
+			rec.Close()
+		}
+	}()
 
 	var wg sync.WaitGroup
 	wg.Add(4)
@@ -142,17 +147,18 @@ func (c *channel) forwardChannelRequests(ctx context.Context, target ssh.Channel
 		if req.Type == "pty-req" {
 			if width, height, ok := parsePtyRequest(req.Payload); ok {
 				// Create recorder for this session if not already created
-				if c.getRecorder() == nil {
+				c.recorderMu.Lock()
+				if !c.recorderSet {
 					if rec := createRecorder(ctx, width, height); rec != nil {
-						c.setRecorder(rec)
+						c.recorder = rec
 						log.FromContext(ctx).Info("Started session recording", 
 							zap.Int("width", width), 
 							zap.Int("height", height))
-					} else {
-						// No recording configured, signal ready anyway
-						close(c.recorderReady)
 					}
+					c.recorderSet = true
+					close(c.recorderReady)
 				}
+				c.recorderMu.Unlock()
 			}
 		}
 		
