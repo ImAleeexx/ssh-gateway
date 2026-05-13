@@ -8,18 +8,16 @@ DATA_DIR := ./data
 
 HOST_KEY_DIR := $(DATA_DIR)/server
 
-$(HOST_KEY_DIR)/ssh_host_dsa_key:
-	ssh-keygen -t dsa -f $(HOST_KEY_DIR)/ssh_host_dsa_key -N "" -C "SSH Gateway"
 $(HOST_KEY_DIR)/ssh_host_ed25519_key:
 	ssh-keygen -t ed25519 -f $(HOST_KEY_DIR)/ssh_host_ed25519_key -N "" -C "SSH Gateway"
 $(HOST_KEY_DIR)/ssh_host_ecdsa_key:
 	ssh-keygen -t ecdsa -f $(HOST_KEY_DIR)/ssh_host_ecdsa_key -N "" -C "SSH Gateway"
 $(HOST_KEY_DIR)/ssh_host_rsa_key:
-	ssh-keygen -t rsa -f $(HOST_KEY_DIR)/ssh_host_rsa_key -N "" -C "SSH Gateway"
+	ssh-keygen -t rsa -b 4096 -f $(HOST_KEY_DIR)/ssh_host_rsa_key -N "" -C "SSH Gateway"
 
 .PHONY: host_keys
 
-host_keys: $(HOST_KEY_DIR)/ssh_host_dsa_key $(HOST_KEY_DIR)/ssh_host_ed25519_key $(HOST_KEY_DIR)/ssh_host_ecdsa_key $(HOST_KEY_DIR)/ssh_host_rsa_key
+host_keys: $(HOST_KEY_DIR)/ssh_host_ed25519_key $(HOST_KEY_DIR)/ssh_host_ecdsa_key $(HOST_KEY_DIR)/ssh_host_rsa_key
 
 .PHONY: build
 
