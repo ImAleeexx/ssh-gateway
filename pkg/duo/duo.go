@@ -111,13 +111,13 @@ func (c *Client) CreateUserDuoFile(username string) error {
 	
 	// Create users directory if it doesn't exist
 	usersDir := filepath.Join(c.dataDir, "users")
-	if err := os.MkdirAll(usersDir, 0755); err != nil {
+	if err := os.MkdirAll(usersDir, 0700); err != nil {
 		return fmt.Errorf("failed to create users directory: %w", err)
 	}
 
 	// Create the duo enabled file with a timestamp
 	content := fmt.Sprintf("Duo enabled for user %s on %s\n", username, time.Now().Format(time.RFC3339))
-	return os.WriteFile(duoEnabledFile, []byte(content), 0644)
+	return os.WriteFile(duoEnabledFile, []byte(content), 0600)
 }
 
 // AuthResult represents the result of a Duo authentication request
