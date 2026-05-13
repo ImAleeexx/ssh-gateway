@@ -8,13 +8,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
+	"regexp"
 	"time"
 
 	duoapi "github.com/duosecurity/duo_api_golang"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 )
+
+var safeUsernameRe = regexp.MustCompile(`^[a-z0-9._-]+$`)
 
 // Config represents the Duo configuration loaded from duo.yaml
 type Config struct {
@@ -91,11 +93,9 @@ func LoadConfig(dataDir string) (*Config, error) {
 
 // IsUserDuoEnabled checks if Duo is enabled for a specific user by looking for duo_enabled_%username% file
 func (c *Client) IsUserDuoEnabled(username string) bool {
-	// Clean username to prevent path traversal
-	username = strings.ReplaceAll(username, "/", "")
-	username = strings.ReplaceAll(username, "\\", "")
-	username = strings.ReplaceAll(username, "..", "")
-
+	if !safeUsernameRe.MatchString(username) {
+		return false
+	}
 	duoEnabledFile := filepath.Join(c.dataDir, "users", fmt.Sprintf("duo_enabled_%s", username))
 	_, err := os.Stat(duoEnabledFile)
 	return err == nil
@@ -103,9 +103,9 @@ func (c *Client) IsUserDuoEnabled(username string) bool {
 
 // CreateUserDuoFile creates a duo_enabled_%username% file to enable Duo for a user
 func (c *Client) CreateUserDuoFile(username string) error {
-	username = strings.ReplaceAll(username, "/", "")
-	username = strings.ReplaceAll(username, "\\", "")
-	username = strings.ReplaceAll(username, "..", "")
+	if !safeUsernameRe.MatchString(username) {
+		return fmt.Errorf("invalid username %q", username)
+	}
 
 	duoEnabledFile := filepath.Join(c.dataDir, "users", fmt.Sprintf("duo_enabled_%s", username))
 	
