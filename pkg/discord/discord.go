@@ -86,7 +86,10 @@ func (n *Notifier) flush(events []eventData) error {
 		return err
 	}
 
-	res, err := http.Post(n.URL, "application/json", bytes.NewBuffer(payload))
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	res, err := client.Post(n.URL, "application/json", bytes.NewBuffer(payload))
 	if err != nil {
 		return err
 	}
