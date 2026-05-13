@@ -207,11 +207,10 @@ func Run(c *cli.Context) error {
 	if metricsUsername := c.String("metrics-username"); metricsUsername != "" {
 		metricsPassword := c.String("metrics-password")
 		if metricsPassword == "" {
-			logger.Warn("Metrics username provided but no password - metrics endpoint will be unprotected")
-		} else {
-			logger.Info("Metrics endpoint protected with basic auth")
-			metricsHandler = basicAuth(metricsHandler, metricsUsername, metricsPassword)
+			return fmt.Errorf("metrics-username is set but metrics-password is empty; refusing to start with an unprotected metrics endpoint")
 		}
+		logger.Info("Metrics endpoint protected with basic auth")
+		metricsHandler = basicAuth(metricsHandler, metricsUsername, metricsPassword)
 	}
 	http.Handle("/metrics", metricsHandler)
 
