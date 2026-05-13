@@ -339,6 +339,26 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		}
 	}
 
+	if gtw.duoClient != nil {
+		keyUsername := strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_")
+		var duoStatusMessages []string
+		messageSender := func(message string) error {
+			duoStatusMessages = append(duoStatusMessages, strings.TrimSpace(message))
+			logger.Info("Duo Status", zap.String("message", strings.TrimSpace(message)))
+			return nil
+		}
+		if duoErr := gtw.duoClient.AuthenticateUserWithMessages(ctx, keyUsername, remoteIP, messageSender); duoErr != nil {
+			logger.Warn("Duo Push authentication failed", zap.String("key_username", keyUsername), zap.Error(duoErr))
+			errorMsg := duoErr.Error()
+			if len(duoStatusMessages) > 0 {
+				errorMsg = fmt.Sprintf("%s\nDuo Status: %s", errorMsg, strings.Join(duoStatusMessages, " → "))
+			}
+			returnErr(fmt.Errorf("%s", errorMsg))
+			return
+		}
+		logger.Info("Duo Push authentication successful", zap.String("key_username", keyUsername))
+	}
+
 	configBytes, err := os.ReadFile(filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "config.yml"))
 	if err != nil {
 		logger.Warn("Could not read upstream config", zap.Error(err))
@@ -504,47 +524,6 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 
 	metrics.RegisterStartForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 	defer metrics.RegisterEndForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
-
-	// Perform Duo Push authentication if configured and enabled for user
-	if gtw.duoClient != nil {
-		// Extract username from the authorized key name (e.g., "authorized_keys_alex" -> "alex")
-		keyUsername := strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_")
-		sshUsername := sshConn.User()
-		
-		logger.Debug("Duo authentication details",
-			zap.String("key_username", keyUsername),
-			zap.String("ssh_username", sshUsername),
-			zap.String("pubkey_name", sshConn.Permissions.Extensions["pubkey-name"]))
-		
-		// Store Duo status messages to include in error messages
-		var duoStatusMessages []string
-		messageSender := func(message string) error {
-			// Store the message to include in error reporting
-			duoStatusMessages = append(duoStatusMessages, strings.TrimSpace(message))
-			logger.Info("Duo Status", zap.String("message", strings.TrimSpace(message)))
-			return nil
-		}
-		
-		// Use the key-based username for Duo authentication
-		// This matches the duo_enabled_<username> file pattern
-		err := gtw.duoClient.AuthenticateUserWithMessages(ctx, keyUsername, remoteIP, messageSender)
-		if err != nil {
-			logger.Warn("Duo Push authentication failed", 
-				zap.String("key_username", keyUsername),
-				zap.Error(err))
-			
-			// Include Duo status messages in the error
-			errorMsg := err.Error()
-			if len(duoStatusMessages) > 0 {
-				errorMsg = fmt.Sprintf("%s\nDuo Status: %s", errorMsg, strings.Join(duoStatusMessages, " → "))
-			}
-			returnErr(fmt.Errorf("%s", errorMsg))
-			return
-		}
-		
-		logger.Info("Duo Push authentication completed successfully", 
-			zap.String("key_username", keyUsername))
-	}
 
 	ctx = forward.NewContextWithEnvironment(ctx, map[string]string{
 		"SSH_GATEWAY_USER_PUBKEY_NAME":        sshConn.Permissions.Extensions["pubkey-name"],
