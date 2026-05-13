@@ -525,9 +525,16 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	metrics.RegisterStartForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 	defer metrics.RegisterEndForward(sshConn.Permissions.Extensions["pubkey-name"], sshConn.User())
 
+	pubkeyComment := strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, sshConn.Permissions.Extensions["pubkey-comment"])
+
 	ctx = forward.NewContextWithEnvironment(ctx, map[string]string{
 		"SSH_GATEWAY_USER_PUBKEY_NAME":        sshConn.Permissions.Extensions["pubkey-name"],
-		"SSH_GATEWAY_USER_PUBKEY_COMMENT":     sshConn.Permissions.Extensions["pubkey-comment"],
+		"SSH_GATEWAY_USER_PUBKEY_COMMENT":     pubkeyComment,
 		"SSH_GATEWAY_USER_PUBKEY_FINGERPRINT": sshConn.Permissions.Extensions["pubkey-fp"],
 		"SSH_GATEWAY_USER_IP":                 remoteIP,
 	})
