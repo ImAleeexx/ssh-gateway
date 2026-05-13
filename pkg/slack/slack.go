@@ -91,7 +91,10 @@ func (n *Notifier) flush(events []eventData) error {
 	}
 	values := make(url.Values)
 	values.Set("payload", string(payload))
-	res, err := http.PostForm(n.URL, values)
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	res, err := client.PostForm(n.URL, values)
 	if err != nil {
 		return err
 	}
