@@ -419,7 +419,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 			os.WriteFile(
 				filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "known_host_generated"),
 				[]byte(knownhosts.Line([]string{hostname, remote.String()}, key)),
-				0644,
+				0600,
 			)
 			return nil
 		}
