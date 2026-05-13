@@ -3,12 +3,15 @@ package slack
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"sync"
 	"text/template"
 	"time"
+
+	"go.uber.org/zap"
 )
 
 type Notifier struct {
@@ -18,6 +21,7 @@ type Notifier struct {
 	IconEmoji    string
 	TextTemplate *template.Template
 	Debounce     time.Duration
+	Logger       *zap.Logger
 
 	mu               sync.Mutex
 	nextEvents       []eventData
@@ -93,6 +97,9 @@ func (n *Notifier) flush(events []eventData) error {
 	}
 	io.Copy(io.Discard, res.Body)
 	res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("slack webhook returned HTTP %d", res.StatusCode)
+	}
 	return nil
 }
 
@@ -119,7 +126,9 @@ func (n *Notifier) NotifyConnect(user, remoteIP, remoteIPDesc, upstream string) 
 			n.nextEvents = nil
 			n.nextNotification = nil
 			n.mu.Unlock()
-			n.flush(events)
+			if err := n.flush(events); err != nil && n.Logger != nil {
+				n.Logger.Error("Failed to send Slack notification", zap.Error(err))
+			}
 		})
 	}
 	return nil
