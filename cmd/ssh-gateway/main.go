@@ -175,13 +175,15 @@ func Run(c *cli.Context) error {
 
 	if slackURL := c.String("slack-url"); slackURL != "" {
 		gtw.SetSlackNotifier(&slack.Notifier{
-			URL: slackURL,
+			URL:    slackURL,
+			Logger: logger,
 		})
 	}
 
 	if discordURL := c.String("discord-url"); discordURL != "" {
 		gtw.SetDiscordNotifier(&discord.Notifier{
-			URL: discordURL,
+			URL:    discordURL,
+			Logger: logger,
 		})
 	}
 
