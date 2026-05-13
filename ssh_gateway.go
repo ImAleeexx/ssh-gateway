@@ -416,11 +416,13 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	} else {
 		logger.Warn("No known_hosts files, will generate...")
 		hostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			os.WriteFile(
+			if err := os.WriteFile(
 				filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "known_host_generated"),
 				[]byte(knownhosts.Line([]string{hostname, remote.String()}, key)),
 				0600,
-			)
+			); err != nil {
+				return err
+			}
 			return nil
 		}
 	}
