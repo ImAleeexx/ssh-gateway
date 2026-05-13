@@ -28,6 +28,10 @@ type Notifier struct {
 
 var defaultTemplate = template.Must(template.New("default").Parse("{{ range .Events }}`{{ .User }}` connected to `{{ .Upstream }}` from `{{ .RemoteIP }}`{{ with .RemoteIPDesc }} ({{ . }}){{ end }}\n{{ end }}"))
 
+var httpClient = &http.Client{
+	Timeout: 10 * time.Second,
+}
+
 func (n *Notifier) buildMessage(data messageData) (*message, error) {
 	msg := message{
 		Username:  n.Username,
@@ -86,10 +90,7 @@ func (n *Notifier) flush(events []eventData) error {
 		return err
 	}
 
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-	}
-	res, err := client.Post(n.URL, "application/json", bytes.NewBuffer(payload))
+	res, err := httpClient.Post(n.URL, "application/json", bytes.NewBuffer(payload))
 	if err != nil {
 		return err
 	}
