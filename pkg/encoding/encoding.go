@@ -24,7 +24,7 @@ func ParseString(in []byte) (out string, rest []byte, ok bool) {
 		return
 	}
 	if uint32(len(rest)) < length {
-		return
+		return "", nil, false
 	}
 	out = string(rest[:length])
 	rest = rest[length:]
