@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"bufio"
 	"context"
 	"fmt"
 	"io"
@@ -36,16 +35,9 @@ func (r Dispatcher) Dispatch(ctx context.Context, sshConn *ssh.ServerConn, sshCh
 			logger.Warn("Could not accept channel", zap.Error(err))
 			return err
 		}
-		go func() {
-			defer channel.Close()
-			scanner := bufio.NewScanner(channel)
-			for scanner.Scan() {
-				fmt.Println(scanner.Text()) // Println will add back the final '\n'
-			}
-			if err := scanner.Err(); err != nil {
-				logger.Warn("scanner err", zap.Error(err))
-			}
-		}()
+		// Commands do not read input. Discard it, so that the client is not
+		// blocked by flow control and untrusted input never reaches the logs.
+		go io.Copy(io.Discard, channel) // nolint:gas
 		env := make(map[string]string)
 		for req := range channelRequests {
 			switch req.Type {
@@ -54,42 +46,44 @@ func (r Dispatcher) Dispatch(ctx context.Context, sshConn *ssh.ServerConn, sshCh
 			case "shell":
 				req.Reply(true, nil)
 				fmt.Fprint(channel, "No shell available.\r\n")
+				channel.SendRequest("exit-status", false, encoding.Uint32(1))
 				channel.Close()
 			case "env":
 				k, rest, ok := encoding.ParseString(req.Payload)
 				if !ok {
+					req.Reply(false, nil)
 					continue
 				}
 				v, rest, ok := encoding.ParseString(rest)
-				if !ok {
-					continue
-				}
-				env[string(k)] = string(v)
-				if len(rest) == 0 {
-					req.Reply(true, nil)
-				}
-			case "exec":
-				cmdBytes, rest, ok := encoding.ParseString(req.Payload)
-				if !ok {
-					continue
-				}
-				if len(rest) != 0 {
+				if !ok || len(rest) != 0 {
 					req.Reply(false, nil)
+					continue
 				}
-				cmdName := string(cmdBytes)
-				logger = logger.With(zap.String("command", cmdName))
+				env[k] = v
+				req.Reply(true, nil)
+			case "exec":
+				cmdName, rest, ok := encoding.ParseString(req.Payload)
+				if !ok || len(rest) != 0 {
+					req.Reply(false, nil)
+					continue
+				}
+				cmdLogger := logger.With(zap.String("command", cmdName))
 				cmd, ok := r[cmdName]
 				req.Reply(ok, nil)
 				if !ok {
+					cmdLogger.Warn("Unknown command")
+					fmt.Fprintf(channel, "Unknown command.\r\n")
+					channel.SendRequest("exit-status", false, encoding.Uint32(127))
+					channel.Close()
 					continue
 				}
-				logger.Debug("Dispatching command")
+				cmdLogger.Debug("Dispatching command")
 				err := cmd(ctx, sshConn.Permissions, env, channel)
 				if err == nil {
-					logger.Info("Executed command")
+					cmdLogger.Info("Executed command")
 					channel.SendRequest("exit-status", false, encoding.Uint32(0))
 				} else {
-					logger.Warn("Executed command", zap.Error(err))
+					cmdLogger.Warn("Executed command", zap.Error(err))
 					channel.SendRequest("exit-status", false, encoding.Uint32(1))
 				}
 				channel.Close()
@@ -98,7 +92,6 @@ func (r Dispatcher) Dispatch(ctx context.Context, sshConn *ssh.ServerConn, sshCh
 					"unknown channel request",
 					zap.String("request_type", req.Type),
 					zap.Bool("want_reply", req.WantReply),
-					zap.ByteString("request_payload", req.Payload),
 				)
 				req.Reply(false, nil)
 			}
