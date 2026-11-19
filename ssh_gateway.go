@@ -254,8 +254,12 @@ func (gtw *Gateway) LoadConfig() error {
 			return err
 		}
 		identityKey, err := ssh.ParsePrivateKey(identityBytes)
+		if isUnsupportedKeyType(err) {
+			logger.Warn("Skip server identity with unsupported key type", zap.String("file", identityFile), zap.Error(err))
+			continue
+		}
 		if err != nil {
-			return err
+			return fmt.Errorf("could not parse server identity %s: %w", filepath.Base(identityFile), err)
 		}
 		logger.Debug("Add server identity", zap.String("file", identityFile))
 		gtw.identityKeys = append(gtw.identityKeys, identityKey)
@@ -264,6 +268,7 @@ func (gtw *Gateway) LoadConfig() error {
 	if err != nil {
 		return err
 	}
+	var hostKeys int
 	for _, hostKeyFile := range hostKeyFiles {
 		if filepath.Ext(hostKeyFile) == ".pub" {
 			continue
@@ -273,14 +278,29 @@ func (gtw *Gateway) LoadConfig() error {
 			return err
 		}
 		hostKey, err := ssh.ParsePrivateKey(hostKeyBytes)
+		if isUnsupportedKeyType(err) {
+			// For example DSA keys, which golang.org/x/crypto no longer supports.
+			logger.Warn("Skip host key with unsupported key type", zap.String("file", hostKeyFile), zap.Error(err))
+			continue
+		}
 		if err != nil {
-			return err
+			return fmt.Errorf("could not parse host key %s: %w", filepath.Base(hostKeyFile), err)
 		}
 		logger.Debug("Add host key", zap.String("file", hostKeyFile))
 		cfg.AddHostKey(hostKey)
+		hostKeys++
+	}
+	if hostKeys == 0 {
+		return errors.New("no usable host keys found in server directory")
 	}
 	gtw.cfg = cfg
 	return nil
+}
+
+// isUnsupportedKeyType returns whether err is returned by ssh.ParsePrivateKey
+// for a key type that is not supported (anymore), such as DSA.
+func isUnsupportedKeyType(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ssh: unsupported key type")
 }
 
 // appendKnownHost records a host key in the given known_hosts file. Keys are

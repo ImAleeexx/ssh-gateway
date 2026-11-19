@@ -140,3 +140,31 @@ func TestHandshakeTimeout(t *testing.T) {
 		t.Fatal("expected idle connection to be closed after the handshake timeout")
 	}
 }
+
+func writeDSAKey(t *testing.T, dataDir string) {
+	t.Helper()
+	// The key contents do not matter: the PEM block type is rejected first.
+	block := &pem.Block{Type: "DSA PRIVATE KEY", Bytes: []byte{0x30, 0x00}}
+	if err := os.WriteFile(filepath.Join(dataDir, "server", "ssh_host_dsa_key"), pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadConfigSkipsUnsupportedHostKey(t *testing.T) {
+	gtw := newTestGateway(t)
+	writeDSAKey(t, gtw.dataDir)
+	if err := gtw.LoadConfig(); err != nil {
+		t.Fatalf("expected DSA host key to be skipped, got %v", err)
+	}
+}
+
+func TestLoadConfigRequiresUsableHostKey(t *testing.T) {
+	gtw := newTestGateway(t)
+	if err := os.Remove(filepath.Join(gtw.dataDir, "server", "ssh_host_ed25519_key")); err != nil {
+		t.Fatal(err)
+	}
+	writeDSAKey(t, gtw.dataDir)
+	if err := gtw.LoadConfig(); err == nil {
+		t.Fatal("expected error when only an unsupported host key is present")
+	}
+}
