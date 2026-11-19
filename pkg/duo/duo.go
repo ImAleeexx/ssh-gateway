@@ -4,6 +4,7 @@ package duo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -16,7 +17,12 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-var safeUsernameRe = regexp.MustCompile(`^[a-z0-9._-]+$`)
+// safeUsernameRe matches usernames that can safely be used in file names and
+// sent to Duo. The first character may not be a dot.
+var safeUsernameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._@+-]*$`)
+
+// ErrInvalidUsername is returned when a username can not be used for Duo.
+var ErrInvalidUsername = errors.New("invalid username for duo authentication")
 
 // Config represents the Duo configuration loaded from duo.yaml
 type Config struct {
@@ -25,6 +31,9 @@ type Config struct {
 	APIHostname    string `yaml:"api_hostname"`
 	PushTimeout    int    `yaml:"push_timeout"`
 	Device         string `yaml:"device,omitempty"`
+	// RequireAll requires Duo for every user, instead of only for users that
+	// have a duo_enabled_<username> file.
+	RequireAll bool `yaml:"require_all,omitempty"`
 }
 
 // Client represents a Duo API client with configuration
@@ -54,7 +63,7 @@ func NewClient(dataDir string, logger *zap.Logger) (*Client, error) {
 	}
 
 	// Set default timeout if not specified
-	if config.PushTimeout == 0 {
+	if config.PushTimeout <= 0 {
 		config.PushTimeout = 60
 	}
 
@@ -64,7 +73,9 @@ func NewClient(dataDir string, logger *zap.Logger) (*Client, error) {
 		config.SecretKey,
 		config.APIHostname,
 		"ssh-gateway/1.0",
-		duoapi.SetTimeout(10*time.Second),
+		// The auth call blocks until the user responds to the push, so the
+		// HTTP timeout must be longer than the push timeout.
+		duoapi.SetTimeout(time.Duration(config.PushTimeout+10)*time.Second),
 	)
 
 	return &Client{
@@ -108,7 +119,7 @@ func (c *Client) CreateUserDuoFile(username string) error {
 	}
 
 	duoEnabledFile := filepath.Join(c.dataDir, "users", fmt.Sprintf("duo_enabled_%s", username))
-	
+
 	// Create users directory if it doesn't exist
 	usersDir := filepath.Join(c.dataDir, "users")
 	if err := os.MkdirAll(usersDir, 0700); err != nil {
@@ -137,12 +148,17 @@ func (c *Client) AuthenticateUser(ctx context.Context, username, clientIP string
 
 // AuthenticateUserWithMessages performs Duo Push authentication with optional message sending
 func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, clientIP string, sendMessage MessageSender) error {
-	if !c.IsUserDuoEnabled(username) {
+	if !safeUsernameRe.MatchString(username) {
+		// Fail closed: a username that can not be checked must not skip MFA.
+		c.logger.Warn("Rejecting Duo authentication for invalid username", zap.String("username", username))
+		return ErrInvalidUsername
+	}
+	if !c.config.RequireAll && !c.IsUserDuoEnabled(username) {
 		c.logger.Debug("Duo not enabled for user, skipping authentication", zap.String("username", username))
 		return nil
 	}
 
-	c.logger.Info("Starting Duo Push authentication", 
+	c.logger.Info("Starting Duo Push authentication",
 		zap.String("username", username),
 		zap.String("client_ip", clientIP))
 
@@ -152,8 +168,8 @@ func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, cli
 		c.logger.Error("Duo preauth failed", zap.String("username", username), zap.Error(err))
 		return fmt.Errorf("duo preauth failed: %w", err)
 	}
-	
-	c.logger.Debug("Duo preauth result", 
+
+	c.logger.Debug("Duo preauth result",
 		zap.String("username", username),
 		zap.Any("preauth", preAuthResult))
 
@@ -204,7 +220,7 @@ func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, cli
 		if sendMessage != nil {
 			sendMessage(fmt.Sprintf("Duo Push authentication timed out after %d seconds. Please try again.\r\n", c.config.PushTimeout))
 		}
-		c.logger.Warn("Duo Push authentication timed out", 
+		c.logger.Warn("Duo Push authentication timed out",
 			zap.String("username", username),
 			zap.Duration("timeout", time.Duration(c.config.PushTimeout)*time.Second))
 		return fmt.Errorf("duo push authentication timed out after %d seconds", c.config.PushTimeout)
@@ -214,14 +230,14 @@ func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, cli
 			if sendMessage != nil {
 				sendMessage(fmt.Sprintf("Duo authentication failed: %v\r\n", authRes.err))
 			}
-			c.logger.Error("Duo API call failed", 
+			c.logger.Error("Duo API call failed",
 				zap.String("username", username),
 				zap.Error(authRes.err))
 			return fmt.Errorf("duo authentication failed: %w", authRes.err)
 		}
 
 		result := authRes.result
-		c.logger.Info("Duo authentication result", 
+		c.logger.Info("Duo authentication result",
 			zap.String("username", username),
 			zap.String("result", result.Result),
 			zap.String("status", result.Status))
@@ -243,7 +259,7 @@ func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, cli
 			if sendMessage != nil {
 				sendMessage(fmt.Sprintf("Duo Push authentication failed: %s\r\n", result.Status))
 			}
-			c.logger.Warn("Duo Push authentication failed", 
+			c.logger.Warn("Duo Push authentication failed",
 				zap.String("username", username),
 				zap.String("result", result.Result),
 				zap.String("status", result.Status))
@@ -256,10 +272,10 @@ func (c *Client) AuthenticateUserWithMessages(ctx context.Context, username, cli
 func (c *Client) performAuth(params map[string][]string) (*AuthResult, error) {
 	// Convert map to url.Values
 	urlParams := url.Values(params)
-	
+
 	// Debug logging to see what parameters are being sent
 	c.logger.Debug("Duo API request parameters", zap.Any("params", params))
-	
+
 	// Make the API call to Duo's auth endpoint
 	resp, body, err := c.duoClient.SignedCall("POST", "/auth/v2/auth", urlParams)
 	if err != nil {
@@ -275,12 +291,12 @@ func (c *Client) performAuth(params map[string][]string) (*AuthResult, error) {
 			MessageDetail string `json:"message_detail"`
 			Stat          string `json:"stat"`
 		}
-		
+
 		if json.Unmarshal(body, &errorResponse) == nil && errorResponse.Stat == "FAIL" {
-			return nil, fmt.Errorf("duo API error (code %d): %s - %s", 
+			return nil, fmt.Errorf("duo API error (code %d): %s - %s",
 				errorResponse.Code, errorResponse.Message, errorResponse.MessageDetail)
 		}
-		
+
 		return nil, fmt.Errorf("duo API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -305,7 +321,7 @@ func (c *Client) performAuth(params map[string][]string) (*AuthResult, error) {
 func (c *Client) performPreAuth(username string) (map[string]interface{}, error) {
 	params := url.Values{}
 	params.Set("username", username)
-	
+
 	resp, body, err := c.duoClient.SignedCall("POST", "/auth/v2/preauth", params)
 	if err != nil {
 		return nil, fmt.Errorf("duo preauth API call failed: %w", err)
@@ -320,12 +336,12 @@ func (c *Client) performPreAuth(username string) (map[string]interface{}, error)
 			MessageDetail string `json:"message_detail"`
 			Stat          string `json:"stat"`
 		}
-		
+
 		if json.Unmarshal(body, &errorResponse) == nil && errorResponse.Stat == "FAIL" {
-			return nil, fmt.Errorf("duo preauth API error (code %d): %s - %s", 
+			return nil, fmt.Errorf("duo preauth API error (code %d): %s - %s",
 				errorResponse.Code, errorResponse.Message, errorResponse.MessageDetail)
 		}
-		
+
 		return nil, fmt.Errorf("duo preauth API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -349,7 +365,7 @@ func (c *Client) performPreAuth(username string) (map[string]interface{}, error)
 // CheckAPIConnectivity tests if we can connect to the Duo API
 func (c *Client) CheckAPIConnectivity() error {
 	c.logger.Debug("Checking Duo API connectivity")
-	
+
 	// Use the ping endpoint to test connectivity
 	resp, body, err := c.duoClient.SignedCall("GET", "/auth/v2/ping", url.Values{})
 	if err != nil {

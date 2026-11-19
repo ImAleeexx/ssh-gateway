@@ -39,6 +39,7 @@ This SSH Gateway now supports Duo Push authentication for enhanced security. Use
    # Optional settings
    push_timeout: 60 # seconds to wait for push response
    # device: "phone1"  # force specific device
+   # require_all: true   # require Duo for every user, not only users with a duo_enabled_ file
    ```
 
 ### 3. Enable Duo for Specific Users
@@ -53,7 +54,9 @@ echo "Duo enabled for alice on $(date)" > data/users/duo_enabled_alice
 echo "Duo enabled for bob on $(date)" > data/users/duo_enabled_bob
 ```
 
-**Important**: The filename must match the pattern `duo_enabled_<username>` where `<username>` is the SSH username.
+**Important**: The filename must match the pattern `duo_enabled_<username>` where `<username>` is the key name: the part after `authorized_keys_` in the user's authorized keys file (for `authorized_keys_alice` that is `alice`). It is also the username sent to Duo.
+
+Key names must start with a letter or digit and may only contain letters, digits, `.`, `_`, `@`, `+` and `-`. When Duo is configured, connections with a key name that does not match are rejected instead of skipping Duo. Duo is also required for the command user (`gateway`).
 
 ### 4. Start SSH Gateway
 
@@ -105,6 +108,7 @@ secret_key: "secret123..." # From Duo Admin Panel
 api_hostname: "api-xxx.duosecurity.com" # From Duo Admin Panel
 push_timeout: 60 # Timeout in seconds (optional)
 device: "phone1" # Force specific device (optional)
+require_all: false # Require Duo for every user (optional)
 ```
 
 ### User Duo Enablement (`data/users/duo_enabled_<username>`)
