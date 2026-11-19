@@ -10,7 +10,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"go.htdvisser.nl/ssh-gateway/pkg/cmd"
@@ -79,7 +81,7 @@ func NewGateway(ctx context.Context, dataDir string) *Gateway {
 	if duoClient, err := duo.NewClient(dataDir, logger); err == nil {
 		gtw.duoClient = duoClient
 		logger.Info("Loaded Duo configuration successfully")
-		
+
 		// Test Duo API connectivity
 		if err := duoClient.CheckAPIConnectivity(); err != nil {
 			logger.Warn("Duo API connectivity check failed", zap.Error(err))
@@ -110,6 +112,22 @@ type Gateway struct {
 	duoClient       *duo.Client
 
 	geoIPDB *geoip.DB
+
+	handshakeTimeout      time.Duration
+	strictHostKeyChecking bool
+	knownHostsMu          sync.Mutex
+}
+
+// SetHandshakeTimeout sets the maximum time a client gets to complete the SSH
+// handshake and authentication. Zero disables the timeout.
+func (gtw *Gateway) SetHandshakeTimeout(timeout time.Duration) {
+	gtw.handshakeTimeout = timeout
+}
+
+// SetStrictHostKeyChecking makes the gateway refuse upstreams that have no
+// known_hosts file, instead of trusting their host key on first use.
+func (gtw *Gateway) SetStrictHostKeyChecking(strict bool) {
+	gtw.strictHostKeyChecking = strict
 }
 
 // SetDefaultUser sets the default username to use on upstream servers (default is root).
@@ -139,7 +157,14 @@ func (gtw *Gateway) SetDuoClient(duoClient *duo.Client) {
 	gtw.duoClient = duoClient
 }
 
-var userRegexp = regexp.MustCompile("^[a-z0-9._-]+$")
+// userRegexp matches valid upstream names. The first character may not be a
+// dot, so that "." and ".." can not be used to escape the upstreams directory.
+var userRegexp = regexp.MustCompile("^[a-z0-9][a-z0-9._-]*$")
+
+// errUpstreamFailed is the error that is returned to clients when the
+// connection to the upstream fails. Details are only logged, not sent to the
+// client, so that internal paths and addresses are not disclosed.
+var errUpstreamFailed = errors.New("could not connect to upstream, see gateway logs for details")
 
 func (gtw *Gateway) bannerCallback(c ssh.ConnMetadata) string {
 	remoteIP, _, _ := net.SplitHostPort(c.RemoteAddr().String())
@@ -229,8 +254,12 @@ func (gtw *Gateway) LoadConfig() error {
 			return err
 		}
 		identityKey, err := ssh.ParsePrivateKey(identityBytes)
+		if isUnsupportedKeyType(err) {
+			logger.Warn("Skip server identity with unsupported key type", zap.String("file", identityFile), zap.Error(err))
+			continue
+		}
 		if err != nil {
-			return err
+			return fmt.Errorf("could not parse server identity %s: %w", filepath.Base(identityFile), err)
 		}
 		logger.Debug("Add server identity", zap.String("file", identityFile))
 		gtw.identityKeys = append(gtw.identityKeys, identityKey)
@@ -239,6 +268,7 @@ func (gtw *Gateway) LoadConfig() error {
 	if err != nil {
 		return err
 	}
+	var hostKeys int
 	for _, hostKeyFile := range hostKeyFiles {
 		if filepath.Ext(hostKeyFile) == ".pub" {
 			continue
@@ -248,14 +278,46 @@ func (gtw *Gateway) LoadConfig() error {
 			return err
 		}
 		hostKey, err := ssh.ParsePrivateKey(hostKeyBytes)
+		if isUnsupportedKeyType(err) {
+			// For example DSA keys, which golang.org/x/crypto no longer supports.
+			logger.Warn("Skip host key with unsupported key type", zap.String("file", hostKeyFile), zap.Error(err))
+			continue
+		}
 		if err != nil {
-			return err
+			return fmt.Errorf("could not parse host key %s: %w", filepath.Base(hostKeyFile), err)
 		}
 		logger.Debug("Add host key", zap.String("file", hostKeyFile))
 		cfg.AddHostKey(hostKey)
+		hostKeys++
+	}
+	if hostKeys == 0 {
+		return errors.New("no usable host keys found in server directory")
 	}
 	gtw.cfg = cfg
 	return nil
+}
+
+// isUnsupportedKeyType returns whether err is returned by ssh.ParsePrivateKey
+// for a key type that is not supported (anymore), such as DSA.
+func isUnsupportedKeyType(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "ssh: unsupported key type")
+}
+
+// appendKnownHost records a host key in the given known_hosts file. Keys are
+// appended (not overwritten), so that the keys of both a jump host and the
+// upstream behind it are remembered.
+func (gtw *Gateway) appendKnownHost(file, hostname string, remote net.Addr, key ssh.PublicKey) error {
+	gtw.knownHostsMu.Lock()
+	defer gtw.knownHostsMu.Unlock()
+	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(knownhosts.Line([]string{hostname, remote.String()}, key) + "\n"); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 var keepAliveDuration = time.Minute
@@ -274,12 +336,24 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	}
 
 	defer conn.Close()
+	if gtw.handshakeTimeout > 0 {
+		// Clients that do not complete the handshake and authentication in
+		// time are disconnected, so that idle connections can not exhaust resources.
+		if err := conn.SetDeadline(time.Now().Add(gtw.handshakeTimeout)); err != nil {
+			logger.Warn("Could not set handshake deadline", zap.Error(err))
+			return
+		}
+	}
 	sshConn, sshChannels, sshRequests, err := ssh.NewServerConn(conn, gtw.cfg)
 	if err != nil {
 		logger.Warn("Could not accept SSH conn", zap.Error(err))
 		return
 	}
 	defer sshConn.Close()
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		logger.Warn("Could not clear handshake deadline", zap.Error(err))
+		return
+	}
 
 	logger = logger.With(
 		zap.String("user", sshConn.User()),
@@ -322,14 +396,6 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		}
 	}()
 
-	if sshConn.User() == gtw.commandUser && len(gtw.commandDispatcher) > 0 {
-		err = gtw.commandDispatcher.Dispatch(log.NewContext(ctx, logger), sshConn, sshChannels, sshRequests)
-		if err != nil {
-			logger.Warn("Could not execute command", zap.Error(err))
-		}
-		return
-	}
-
 	returnErr := func(err error) {
 		go ssh.DiscardRequests(sshRequests)
 		select {
@@ -339,6 +405,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		}
 	}
 
+	// Duo MFA is performed before anything else, including gateway commands.
 	if gtw.duoClient != nil {
 		keyUsername := strings.TrimPrefix(sshConn.Permissions.Extensions["pubkey-name"], "authorized_keys_")
 		var duoStatusMessages []string
@@ -359,16 +426,24 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		logger.Info("Duo Push authentication successful", zap.String("key_username", keyUsername))
 	}
 
+	if sshConn.User() == gtw.commandUser && len(gtw.commandDispatcher) > 0 {
+		err = gtw.commandDispatcher.Dispatch(log.NewContext(ctx, logger), sshConn, sshChannels, sshRequests)
+		if err != nil {
+			logger.Warn("Could not execute command", zap.Error(err))
+		}
+		return
+	}
+
 	configBytes, err := os.ReadFile(filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "config.yml"))
 	if err != nil {
 		logger.Warn("Could not read upstream config", zap.Error(err))
-		returnErr(err)
+		returnErr(errUpstreamFailed)
 		return
 	}
 	var upstream upstreamConfig
 	if err = yaml.Unmarshal(configBytes, &upstream); err != nil {
 		logger.Warn("Could not unmarshal upstream config", zap.Error(err))
-		returnErr(err)
+		returnErr(errUpstreamFailed)
 		return
 	}
 	if upstream.Port == 0 {
@@ -381,7 +456,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		identityFiles, err := filesInDir(filepath.Join(gtw.dataDir, "upstreams", sshConn.User()), "id_*")
 		if err != nil {
 			logger.Warn("Could not list upstream identity files", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
 		for _, identityFile := range identityFiles {
@@ -410,24 +485,26 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		hostKeyCallback, err = knownhosts.New(hostKeyFiles...)
 		if err != nil {
 			logger.Error("Failed to load known hosts files", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
+	} else if gtw.strictHostKeyChecking {
+		logger.Error("No known_hosts files for upstream and strict host key checking is enabled")
+		returnErr(errUpstreamFailed)
+		return
 	} else {
-		logger.Warn("No known_hosts files, will generate...")
+		logger.Warn("No known_hosts files, trusting host keys on first use")
+		knownHostsFile := filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "known_host_generated")
 		hostKeyCallback = func(hostname string, remote net.Addr, key ssh.PublicKey) error {
-			if err := os.WriteFile(
-				filepath.Join(gtw.dataDir, "upstreams", sshConn.User(), "known_host_generated"),
-				[]byte(knownhosts.Line([]string{hostname, remote.String()}, key)),
-				0600,
-			); err != nil {
-				return err
-			}
-			return nil
+			logger.Warn("Trusting upstream host key on first use",
+				zap.String("host", hostname),
+				zap.String("fingerprint", ssh.FingerprintSHA256(key)),
+			)
+			return gtw.appendKnownHost(knownHostsFile, hostname, remote, key)
 		}
 	}
 
-	upstreamAddr := fmt.Sprintf("%s:%d", upstream.Host, upstream.Port)
+	upstreamAddr := net.JoinHostPort(upstream.Host, strconv.FormatUint(uint64(upstream.Port), 10))
 	var upstreamConn net.Conn
 
 	if upstream.JumpHost != "" {
@@ -438,7 +515,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 			upstream.JumpUser = gtw.defaultUser
 		}
 
-		jumpAddr := fmt.Sprintf("%s:%d", upstream.JumpHost, upstream.JumpPort)
+		jumpAddr := net.JoinHostPort(upstream.JumpHost, strconv.FormatUint(uint64(upstream.JumpPort), 10))
 		logger.Info(
 			"Connect to jump host",
 			zap.String("jump_user", upstream.JumpUser),
@@ -447,7 +524,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		jumpConn, err := net.DialTimeout("tcp", jumpAddr, 5*time.Second)
 		if err != nil {
 			logger.Warn("Could not dial to jump host", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
 		jumpConn = metrics.NewMeteredConn(jumpConn, sshConn.User())
@@ -460,7 +537,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		})
 		if err != nil {
 			logger.Warn("Could not set up SSH client connection to jump host", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
 		sshJump := ssh.NewClient(jumpSSHConn, chans, reqs)
@@ -474,7 +551,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		upstreamConn, err = sshJump.Dial("tcp", upstreamAddr)
 		if err != nil {
 			logger.Warn("Could not dial from jump host to upstream", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
 	} else {
@@ -486,7 +563,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 		upstreamConn, err = net.DialTimeout("tcp", upstreamAddr, 5*time.Second)
 		if err != nil {
 			logger.Warn("Could not dial to upstream", zap.Error(err))
-			returnErr(err)
+			returnErr(errUpstreamFailed)
 			return
 		}
 	}
@@ -501,7 +578,7 @@ func (gtw *Gateway) Handle(conn net.Conn) {
 	})
 	if err != nil {
 		logger.Warn("Could not set up SSH client connection to upstream", zap.Error(err))
-		returnErr(err)
+		returnErr(errUpstreamFailed)
 		return
 	}
 	sshTarget := ssh.NewClient(upstreamSSHConn, chans, reqs)

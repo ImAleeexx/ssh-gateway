@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -37,6 +36,7 @@ import (
 	"go.htdvisser.nl/ssh-gateway"
 	"go.htdvisser.nl/ssh-gateway/pkg/cmd"
 	"go.htdvisser.nl/ssh-gateway/pkg/discord"
+	"go.htdvisser.nl/ssh-gateway/pkg/limit"
 	"go.htdvisser.nl/ssh-gateway/pkg/log"
 	"go.htdvisser.nl/ssh-gateway/pkg/metrics"
 	"go.htdvisser.nl/ssh-gateway/pkg/slack"
@@ -88,6 +88,10 @@ func init() {
 		cli.StringFlag{Name: "discord-url", Usage: "URL for Discord notifications", EnvVar: "DISCORD_URL"},
 		cli.StringFlag{Name: "metrics-username", Usage: "Username for metrics endpoint basic auth", EnvVar: "METRICS_USERNAME"},
 		cli.StringFlag{Name: "metrics-password", Usage: "Password for metrics endpoint basic auth", EnvVar: "METRICS_PASSWORD"},
+		cli.DurationFlag{Name: "handshake-timeout", Usage: "Maximum time for a client to complete the SSH handshake and authentication", EnvVar: "HANDSHAKE_TIMEOUT", Value: 30 * time.Second},
+		cli.IntFlag{Name: "max-connections", Usage: "Maximum number of concurrent SSH connections (0 = unlimited)", EnvVar: "MAX_CONNECTIONS", Value: 1024},
+		cli.IntFlag{Name: "max-connections-per-ip", Usage: "Maximum number of concurrent SSH connections per remote IP (0 = unlimited)", EnvVar: "MAX_CONNECTIONS_PER_IP", Value: 32},
+		cli.BoolFlag{Name: "strict-host-key-checking", Usage: "Refuse upstreams without a known_hosts file instead of trusting the host key on first use", EnvVar: "STRICT_HOST_KEY_CHECKING"},
 	}
 	app.Action = Run
 }
@@ -114,8 +118,8 @@ func basicAuth(handler http.Handler, username, password string) http.Handler {
 
 // Run the SSH Gateway
 func Run(c *cli.Context) error {
-	signals := make(chan os.Signal)
-	signal.Notify(signals, os.Interrupt, os.Kill, syscall.SIGTERM)
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -134,28 +138,30 @@ func Run(c *cli.Context) error {
 	dataDir, err := filepath.Abs(c.String("data"))
 	if err != nil {
 		logger.Error("Could not find data dir", zap.Error(err))
-		return fmt.Errorf("Could not find data dir: %w", err)
+		return fmt.Errorf("could not find data dir: %w", err)
 	}
 
 	gtw := ssh.NewGateway(ctx, dataDir)
+	gtw.SetHandshakeTimeout(c.Duration("handshake-timeout"))
+	gtw.SetStrictHostKeyChecking(c.Bool("strict-host-key-checking"))
 
 	err = gtw.LoadConfig()
 	if err != nil {
 		logger.Error("Could not load config", zap.Error(err))
-		return fmt.Errorf("Could not load config: %w", err)
+		return fmt.Errorf("could not load config: %w", err)
 	}
 
 	allUpstreams, err := upstreams.All(dataDir)
 	if err != nil {
 		logger.Error("Could not load upstreams", zap.Error(err))
-		return fmt.Errorf("Could not load upstreams: %w", err)
+		return fmt.Errorf("could not load upstreams: %w", err)
 	}
 	for _, upstream := range allUpstreams {
 		metrics.InitUpstream(upstream)
 		allAuthorized, err := upstreams.ListAuthorized(dataDir, upstream)
 		if err != nil {
 			logger.Error("Could not load authorized keys for upstream", zap.String("upstream", upstream), zap.Error(err))
-			return fmt.Errorf("Could not load authorized keys for upstream %s: %s", upstream, err)
+			return fmt.Errorf("could not load authorized keys for upstream %s: %w", upstream, err)
 		}
 		for _, authorized := range allAuthorized {
 			metrics.InitForward(authorized, upstream)
@@ -204,7 +210,8 @@ func Run(c *cli.Context) error {
 		}
 	}()
 
-	// Setup metrics endpoint with optional basic auth
+	// Setup metrics endpoint with optional basic auth. A dedicated mux is used
+	// so that no other handlers (such as net/http/pprof) can end up exposed.
 	metricsHandler := promhttp.Handler()
 	if metricsUsername := c.String("metrics-username"); metricsUsername != "" {
 		metricsPassword := c.String("metrics-password")
@@ -214,12 +221,18 @@ func Run(c *cli.Context) error {
 		logger.Info("Metrics endpoint protected with basic auth")
 		metricsHandler = basicAuth(metricsHandler, metricsUsername, metricsPassword)
 	}
-	http.Handle("/metrics", metricsHandler)
+	httpMux := http.NewServeMux()
+	httpMux.Handle("/metrics", metricsHandler)
+
+	connLimit := &limit.Connections{
+		Max:      c.Int("max-connections"),
+		MaxPerIP: c.Int("max-connections-per-ip"),
+	}
 
 	lis, err := net.Listen("tcp", c.String("listen"))
 	if err != nil {
 		logger.Error("Could not listen for SSH", zap.Error(err))
-		return fmt.Errorf("Could not listen for SSH: %w", err)
+		return fmt.Errorf("could not listen for SSH: %w", err)
 	}
 	defer lis.Close()
 	logger.Info("Start accepting connections", zap.String("address", lis.Addr().String()))
@@ -233,10 +246,17 @@ func Run(c *cli.Context) error {
 				logger.Error("Could not accept client", zap.Error(err))
 				continue
 			}
+			remoteIP, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+			if !connLimit.Acquire(remoteIP) {
+				logger.Warn("Connection limit reached, rejecting client", zap.String("remote_ip", remoteIP))
+				conn.Close()
+				continue
+			}
 			wg.Add(1)
 			go func() {
+				defer wg.Done()
+				defer connLimit.Release(remoteIP)
 				gtw.Handle(conn)
-				wg.Done()
 			}()
 		}
 	}()
@@ -244,18 +264,21 @@ func Run(c *cli.Context) error {
 	httpLis, err := net.Listen("tcp", c.String("listen-http"))
 	if err != nil {
 		logger.Error("Could not listen for HTTP", zap.Error(err))
-		return fmt.Errorf("Could not listen for HTTP: %w", err)
+		return fmt.Errorf("could not listen for HTTP: %w", err)
 	}
 	defer httpLis.Close()
-	go http.Serve(httpLis, nil)
-
-	for {
-		select {
-		case sig := <-signals:
-			fmt.Println()
-			logger.Info("Received signal, exiting...", zap.String("signal", sig.String()))
-			cancel()
-			return nil
-		}
+	httpServer := &http.Server{
+		Handler:           httpMux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
+	go httpServer.Serve(httpLis)
+
+	sig := <-signals
+	fmt.Println()
+	logger.Info("Received signal, exiting...", zap.String("signal", sig.String()))
+	cancel()
+	return nil
 }

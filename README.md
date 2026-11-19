@@ -36,7 +36,9 @@ The `data` folder (location can be changed with the `DATA` environment variable)
   - `authorized_keys_*` files can be used to give public keys of users that can access that server
   - `config.yml` contains host/port/user config (see below)
   - `id_*` files can be used to give private keys to use with that server
-  - `known_host_*` files can be used to give known host keys for that server
+  - `known_host_*` files can be used to give known host keys for that server. If there are none, the host keys are trusted on first use and saved to `known_host_generated` (including the jump host's key). Use `--strict-host-key-checking` to refuse upstreams without known host keys instead.
+
+Upstream names must start with a lowercase letter or digit and may only contain lowercase letters, digits, `.`, `_` and `-`.
 
 Example `data` folder structure:
 
@@ -99,6 +101,17 @@ SSH_GATEWAY_USER_PUBKEY_NAME=authorized_keys_name
 ```
 
 To use these, you'll need to add `AcceptEnv SSH_GATEWAY_*` to `/etc/ssh/sshd_config` on your upstreams.
+
+### Security options
+
+| Flag | Environment variable | Default | Description |
+|---|---|---|---|
+| `--handshake-timeout` | `HANDSHAKE_TIMEOUT` | `30s` | Maximum time for a client to complete the SSH handshake and authentication |
+| `--max-connections` | `MAX_CONNECTIONS` | `1024` | Maximum number of concurrent SSH connections (0 = unlimited) |
+| `--max-connections-per-ip` | `MAX_CONNECTIONS_PER_IP` | `32` | Maximum number of concurrent SSH connections per remote IP (0 = unlimited) |
+| `--strict-host-key-checking` | `STRICT_HOST_KEY_CHECKING` | `false` | Refuse upstreams without `known_host_*` files instead of trusting their host key on first use |
+
+Pass secrets such as `METRICS_PASSWORD`, `SLACK_URL` and `DISCORD_URL` as environment variables rather than flags, so that they do not show up in the process list.
 
 ### Commands
 
